@@ -1,0 +1,116 @@
+---
+title: "ODIN data analysis"
+author: "Gustavo Olivares"
+date: "08/07/2014"
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r}
+# Load required packages
+require(openair)
+# Load ODIN data from figshare
+odin_01 <- read.table("http://files.figshare.com/1582978/odin_01.data",
+                      header=T,
+                      quote="")
+# force GMT as the time zone to avoid openair issues with daylight saving switches
+# The actual time zone is 'NZST'
+odin_01$date=as.POSIXct(paste(odin_01$Date,odin_01$Time),tz='GMT')
+odin_01$Time<-NULL
+odin_01$Date<-NULL
+odin_01$Battery<-5*odin_01$Battery/1024
+
+# Load ECan data from the data catalogue
+download.file(url = "http://data.ecan.govt.nz/data/29/Air/Air%20quality%20data%20for%20a%20monitored%20site/CSV?SiteId=1&StartDate=15%2F05%2F2014&EndDate=04%2F06%2F2014",destfile = "ecan_data.csv",method = "curl")
+# Note that the "system" calls require "sed" installed and have only been tested
+# in Linux (see system information below)
+system("sed -i 's/a.m./AM/g' ecan_data.csv")
+system("sed -i 's/p.m./PM/g' ecan_data.csv")
+ecan_data_raw <- read.csv("ecan_data.csv",stringsAsFactors=FALSE)
+ecan_data_raw$date<-as.POSIXct(ecan_data_raw$DateTime,format = "%d/%m/%Y %I:%M:%S %p",tz='GMT')
+ecan_data<-as.data.frame(ecan_data_raw[,c('date','FDMS.PM10','FDMS.PM25','Temp_2m_CR','Temp_10_HMP')])
+
+# Merging the data
+odin_01.10min<-timeAverage(odin_01,avg.time='10 min')
+all_merged.10min_FULL<-merge(odin_01.10min,ecan_data,by='date',all=TRUE)
+all_merged.10min<-selectByDate(all_merged.10min_FULL,start="15/5/2014",end="3/6/2014")
+names(all_merged.10min)<-c('date','ODIN.raw','Humidity.01','Temperature.01',
+                           'Battery.01','PM10','PM2.5',
+                           'Temperature_1m','Temperature_10m')
+
+# Time sync
+# Check the time difference, correct the data and re-merge.
+lag_test=ccf(all_merged.10min$Temperature.01,
+             all_merged.10min$Temperature_1m,
+             na.action=na.pass,
+             lag.max=100,
+             type='correlation',
+             ylab='Correlation',
+             main='Temperature correlation as function of clock lag')
+odin01_lag=lag_test$lag[which.max(lag_test$acf)]
+odin_01$date=odin_01$date-odin01_lag*10*60
+odin_01.10min<-timeAverage(odin_01,avg.time='10 min')
+all_merged.10min_FULL<-merge(odin_01.10min,ecan_data,by='date',all=TRUE)
+all_merged.10min<-selectByDate(all_merged.10min_FULL,start="15/5/2014",end="3/6/2014")
+names(all_merged.10min)<-c('date','ODIN.raw','Humidity.01','Temperature.01',
+                           'Battery.01','PM10','PM2.5',
+                           'Temperature_1m','Temperature_10m')
+all_merged.1hr<-timeAverage(all_merged.10min,avg.time='1 hour')
+
+
+# Dust performance using ECan data for calibration
+# Calibration expression:
+#  $Dust_{calibrated}=A*Dust_{raw}+B*Temperature_{ODIN}+C*RH_{ODIN}+D$
+
+# Full dataset 1 hour  
+# PM$_{2.5}$ fdms
+summary(odin1.lm.full.1hr.pm2.5<-
+          lm(data=all_merged.1hr,PM2.5~
+               ODIN.raw+Temperature.01+Humidity.01))
+
+### Daytime dataset 1 hour
+daytime_merged.1hr<-selectByDate(all_merged.1hr,hour=9:18)
+
+#### PM$_{2.5}$_fdms
+summary(odin1.lm.daytime.1hr.pm2.5<-
+          lm(data=daytime_merged.1hr,PM2.5~
+               ODIN.raw+Temperature.01+Humidity.01))
+
+### Nighttime dataset 1 hour
+nighttime_merged.1hr<-selectByDate(all_merged.1hr,hour=c(0:8,19:23))
+
+#### PM$_{2.5}$ fdms
+summary(odin1.lm.nighttime.1hr.pm2.5<-
+          lm(data=nighttime_merged.1hr,PM2.5~
+               ODIN.raw+Temperature.01+Humidity.01))
+
+### Plot the change in calibration for PM$_{2.5}$
+all_merged.1hr$ODIN<-predict(odin1.lm.full.1hr.pm2.5,
+                             newdata = all_merged.1hr)
+all_merged.1hr$ODIN.day<-predict(odin1.lm.daytime.1hr.pm2.5,
+                                 newdata = all_merged.1hr)
+all_merged.1hr$ODIN.night<-predict(odin1.lm.nighttime.1hr.pm2.5,
+                                   newdata = all_merged.1hr)
+pdf('raw_odin_fdms.pdf',width = 12,height = 6)
+timePlot(all_merged.1hr,
+         pollutant = c('PM2.5','ODIN.raw'),
+         avg.time='1 hour',group=FALSE,xlab='',ylab='Dust',
+         main='Raw ODIN output')
+dev.off()
+pdf('cal_odin_fdms_1hr.pdf',width = 12,height = 3)
+timePlot(all_merged.1hr,
+         pollutant = c('PM2.5','ODIN','ODIN.day','ODIN.night'),
+         avg.time='1 hour',group=TRUE,xlab='',ylab='PM2.5 [ug/m3]',
+         main='Calibration Comparison')
+dev.off()
+pdf('cal_raw_odin_fdms_1dy.pdf',width = 12,height = 3)
+timePlot(all_merged.1hr,
+         pollutant = c('PM2.5','ODIN','ODIN.day','ODIN.night'),
+         avg.time='1 day',group=TRUE,xlab='',ylab='PM2.5 [ug/m3]',
+         main='')
+dev.off()
+
+# System information
+sessionInfo()
+```
