@@ -1,5 +1,5 @@
-ODIN_anzas2014
-==============
+ODIN ANZAW 2014
+===============
 
 Data analysis script to generate the data for the "Outdoor Dust Information Node - ODIN - Development and first tests"
 
